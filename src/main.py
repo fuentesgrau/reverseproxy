@@ -1,6 +1,6 @@
 # Standard Libraries
 import asyncio, json, logging, signal, shutil, sys, time, uuid
-from asyncio import StreamReader, StreamWriter, IncompleteReadError
+from asyncio import StreamReader, StreamWriter
 from pathlib import Path
 
 # Local Libraries
@@ -72,11 +72,21 @@ async def client_connected_cb(client_reader: StreamReader, client_writer: Stream
     try:
         # HTTP-Header and HTTP-Body are always separated by a blank line: \r\n\r\n. Source: RFC 9112 (Section 2.1).
         http_request_header = await asyncio.wait_for(client_reader.readuntil(b'\r\n\r\n'), timeout=1)  # If necessary, set a longer timeout value
-    except IncompleteReadError as e:
+    except asyncio.IncompleteReadError as e:
         logger.debug(f"IncompleteReadError: {e}")
         logger.debug(f"Read Message: {e.partial}")
 
         client_writer.write(b'HTTP/1.1 400 Bad Request\r\n\r\n')
+        await client_writer.drain()
+
+        client_writer.close()
+        await client_writer.wait_closed()
+
+        return
+    except asyncio.TimeoutError as e:
+        logger.debug(f"TimeoutError: {e}")
+
+        client_writer.write(b'HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n')
         await client_writer.drain()
 
         client_writer.close()
@@ -193,7 +203,7 @@ async def client_connected_cb(client_reader: StreamReader, client_writer: Stream
 
                 container_reader, container_writer = await asyncio.open_connection('localhost', port)
                 continue
-            except IncompleteReadError as e:
+            except asyncio.IncompleteReadError as e:
                 logger.debug(f"IncompleteReadError: {e}")
 
                 container_writer.close()
