@@ -18,8 +18,8 @@ class Session:
 d = docker.from_env()
 logger = logging.getLogger(__name__)
 
-webui_id_counter = 1
 available_webui_ids = deque()
+webui_id_counter = 1
 
 def get_http_request_path(http_request_header: bytes) -> bytes:
     """Parses the path inside an HTTP-Request.
@@ -110,6 +110,21 @@ async def create_session(sid: str) -> Session:
         ports={'1880/tcp': 0},                           # -p 0:1880 (0 lets the kernel choose a free port)
         volumes={path: {'bind': '/data', 'mode': 'rw'}}  # -v reverseproxy/data/sid:/data
     )                                                    # type: ignore
-    session = Session(container, time.time(), path, get_webui_id())
+    session = Session(container, time.monotonic(), path, get_webui_id())
 
     return session
+
+def is_ratelimited(ip: str, ip_ratelimits: dict) -> bool:
+    current_time = time.monotonic()
+    ip_ratelimit = ip_ratelimits.setdefault(ip, deque())
+
+    # Die 60 sind die 60 Sekunden im Beispiel: maximal 20 Requests je 60 Sekunden
+    while ip_ratelimit and current_time - 60 > ip_ratelimit[0]:  # Same as: current_time - ip_ratelimit[0] > 60
+        ip_ratelimit.popleft()
+
+    if len(ip_ratelimit) > 20:  # Das sind die 20 Container im Beispiel: maximal 20 Container bzw. Requests je 60 Sekunden
+        return True
+
+    ip_ratelimit.append(current_time)
+
+    return False
