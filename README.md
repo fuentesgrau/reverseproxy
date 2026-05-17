@@ -218,6 +218,12 @@ If you are testing locally just type in your Browser: `loocalhost:1453/webui`
 Well, the following bullet points could be a plausible roadmap:
 
 - Catch `àsyncio.LimitOverrunError` on the read calls such as `readuntil(b'\r\n\r\n')`.
+- In `src/utils.py` the line
+    ```python
+    http_request_method, http_request_path, http_request_version = http_request_line.split(b' ')`
+    ```
+  is too risky and can cause errors. Better to check if the split truly results in 3 parts.
+- Only send SSE when `data` changes. Possible to implement with `asyncio.Queue`.
 - Advance the socket from HTTP to HTTPS.
 - Rewrite the *frontend* JavaScript code (, because it is 100 % LLM at this point of time) and make it more like in the animation.
 - Write test scripts.
