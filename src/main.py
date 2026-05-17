@@ -10,7 +10,8 @@ from utils import (
     create_session,
     get_http_content_length,
     get_http_request_cookies,
-    get_http_request_path
+    get_http_request_path,
+    is_ratelimited
 )
 
 # Filtering unavoidable error messages, because they happen way too deep down in the lower levels of asyncio
@@ -22,9 +23,9 @@ class LoggingFilter(logging.Filter):
             'Fatal write error on socket transport' not in message     # Happens when the Client closes the WebUI (SSE connection)
         )
 logging.getLogger('asyncio').addFilter(LoggingFilter())
-
 logger = logging.getLogger(__name__)
 
+ip_ratelimits = {}
 sessions = {}
 
 def graceful_shutdown():
@@ -36,11 +37,19 @@ def graceful_shutdown():
         # Didn't do `del sessions[sid]` since the program is going to close anyway
     sys.exit(0)
 
+async def poll_ip_ratelimits():
+    while True:
+        await asyncio.sleep(600)
+        for ip, ip_ratelimit in list(ip_ratelimits.items()):
+            if len(ip_ratelimit) == 0:
+                del ip_ratelimits[ip]
+
 async def poll_sessions():
     while True:
         # A *too tight* window leads to the deletion of the container before it can be even used
-        for sid, session in list(sessions.items()):
-            elapsed_time = time.time() - session.last_seen
+        await asyncio.sleep(60)
+        for sid, session in list(sessions.items()):  # list(...) erstellt eine Kopie. Lösung dafür, dass in der Schleife `del sessions[sid]` aufgerufen werden muss.
+            elapsed_time = time.monotonic() - session.last_seen
             logger.debug(f"Elapsed Time: {elapsed_time} seconds for Session: {session}")
             if elapsed_time > 60:
                 logger.debug(f"Deleting expired Sessoin: {session}")
@@ -49,13 +58,20 @@ async def poll_sessions():
                 await asyncio.to_thread(shutil.rmtree, session.path, ignore_errors=False, onerror=None)
                 available_webui_ids.append(session.webui_id)
                 del sessions[sid]
-        await asyncio.sleep(60)
 
 async def client_connected_cb(client_reader: StreamReader, client_writer: StreamWriter) -> None:
-    # TODO: IP Rate Limiting, e.g. 10 Container Creations per IP per 60 seconds
-    # TODO: Add Timeout
+    if is_ratelimited(client_writer.get_extra_info('peername')[0], ip_ratelimits):
+        client_writer.write(b'HTTP/1.1 429 Too Many Requests\r\nRetry-After: 60\r\n\r\n')
+        await client_writer.drain()
+
+        client_writer.close()
+        await client_writer.wait_closed()
+
+        return
+
     try:
-        http_request_header = await client_reader.readuntil(b'\r\n\r\n')  # HTTP-Header and HTTP-Body are always separated by a blank line: \r\n\r\n. Source: RFC 9112 (Section 2.1).
+        # HTTP-Header and HTTP-Body are always separated by a blank line: \r\n\r\n. Source: RFC 9112 (Section 2.1).
+        http_request_header = await asyncio.wait_for(client_reader.readuntil(b'\r\n\r\n'), timeout=1)  # If necessary, set a longer timeout value
     except IncompleteReadError as e:
         logger.debug(f"IncompleteReadError: {e}")
         logger.debug(f"Read Message: {e.partial}")
@@ -119,7 +135,7 @@ async def client_connected_cb(client_reader: StreamReader, client_writer: Stream
                 client_writer.close()
                 return
 
-            await asyncio.sleep(1)
+            await asyncio.sleep(3)
 
     http_request_cookies = get_http_request_cookies(http_request_header)
     sid = http_request_cookies.get('sid')  # sid stands for "session id"
@@ -138,7 +154,7 @@ async def client_connected_cb(client_reader: StreamReader, client_writer: Stream
 
         async def forward(reader: StreamReader, writer: StreamWriter):
             while True:
-                sessions[sid].last_seen = time.time()
+                sessions[sid].last_seen = time.monotonic()
                 message = await reader.read(4096)
                 if not message:
                     break
@@ -188,8 +204,7 @@ async def client_connected_cb(client_reader: StreamReader, client_writer: Stream
                 container_reader, container_writer = await asyncio.open_connection('localhost', port)
                 continue
             break
-        # TODO: Add HttpOnly etc.
-        http_response_header = http_response_header.replace(b'\r\n\r\n', f"\r\nSet-Cookie: sid={sid}\r\n\r\n".encode(), 1)
+        http_response_header = http_response_header.replace(b'\r\n\r\n', f"\r\nSet-Cookie: sid={sid}; SameSite=Strict; HttpOnly\r\n\r\n".encode(), 1)
 
         content_length = get_http_content_length(http_response_header)
         http_response_body = await container_reader.readexactly(content_length)
@@ -209,11 +224,12 @@ async def client_connected_cb(client_reader: StreamReader, client_writer: Stream
         return
 
 async def main():
-    asyncio.get_event_loop().add_signal_handler(signal.SIGINT, graceful_shutdown)  # type: ignore
-    socket = await asyncio.start_server(client_connected_cb, '0.0.0.0', 1453)  # TODO: Add limit
+    asyncio.get_event_loop().add_signal_handler(signal.SIGINT, graceful_shutdown)        # type: ignore
+    socket = await asyncio.start_server(client_connected_cb, '0.0.0.0', 1453)  # default StreamReader buffer limit is 64 KiB
     async with socket:
         await asyncio.gather(
             socket.serve_forever(),
+            poll_ip_ratelimits(),
             poll_sessions()
         )
 
