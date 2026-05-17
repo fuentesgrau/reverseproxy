@@ -96,7 +96,7 @@ You might have to adjust the following line if you want to go *public*:
 s = await asyncio.start_server(client_connected_cb, '0.0.0.0', 1453)
 ```
 
-## Basic usage / customization
+## Using a custom Docker-Image
 
 Instead of the default Node-RED Docker-Container you can try to use any other Docker Image of your choice. 
 You just have to change the Image name in the following part of the code:
@@ -126,6 +126,84 @@ docker_container = await asyncio.to_thread(
 > [!NOTE]
 > Since Node-RED speaks HTTP I suppose any other Docker-Image that also can speak HTTP should hopefully work flawlessly.
 
+## Abandoned Sessions
+
+This is the Code for polling sessions and checking if they can be deleted in order to save on memory:
+
+```python
+
+async def poll_sessions():
+    while True:
+        # A *too tight* window leads to the deletion of the container before it can be even used
+        await asyncio.sleep(60)
+        for sid, session in list(sessions.items()):  # list(...) erstellt eine Kopie. Lösung dafür, dass in der Schleife `del sessions[sid]` aufgerufen werden muss.
+            elapsed_time = time.monotonic() - session.last_seen
+            logger.debug(f"Elapsed Time: {elapsed_time} seconds for Session: {session}")
+            if elapsed_time > 60:
+                logger.debug(f"Deleting expired Sessoin: {session}")
+                await asyncio.to_thread(session.container.stop)
+                await asyncio.to_thread(session.container.remove)
+                await asyncio.to_thread(shutil.rmtree, session.path, ignore_errors=False, onerror=None)
+                available_webui_ids.append(session.webui_id)
+                del sessions[sid]
+```
+
+As of now this Reverseproxy checks every 60 seconds for *abandoned* sessions. This is done by the line:
+
+```python
+await asyncio.sleep(60)
+```
+
+You can change that value to your liking.
+
+A session is considered abandoned when the last message between Client and the Container has been more than 60 seconds ago.
+This is done by the lines:
+
+```python
+elapsed_time = time.monotonic() - session.last_seen
+if elapsed_time > 60:
+```
+
+You can change the 60 seconds to your liking.
+
+> [!IMPORTANT]
+> At least in Node-RED the WebSocket heartbeat is sent about every 15 seconds.
+
+## IP Rate Limiting
+
+In `src/utils.py` you can adjust the amount of requests per seconds in this function:
+
+```python
+def is_ratelimited(ip: str, ip_ratelimits: dict) -> bool:
+    current_time = time.monotonic()
+    ip_ratelimit = ip_ratelimits.setdefault(ip, deque())
+
+    # Die 60 sind die 60 Sekunden im Beispiel: maximal 20 Requests je 60 Sekunden
+    while ip_ratelimit and current_time - 60 > ip_ratelimit[0]:  # Same as: current_time - ip_ratelimit[0] > 60
+        ip_ratelimit.popleft()
+
+    if len(ip_ratelimit) > 20:  # Das sind die 20 Container im Beispiel: maximal 20 Container bzw. Requests je 60 Sekunden
+        return True
+
+    ip_ratelimit.append(current_time)
+
+    return False
+```
+
+The `60` within the while loop stands for 60 seconds and the `20` in the if check stands for the amount of requests,
+i.e. `20` requests per `60` seconds.
+
+The following functions deletes *abandoned* ip addresses every 10 minutes:
+
+```python
+async def poll_ip_ratelimits():
+    while True:
+        await asyncio.sleep(600)
+        for ip, ip_ratelimit in list(ip_ratelimits.items()):
+            if len(ip_ratelimit) == 0:
+                del ip_ratelimits[ip]
+```
+
 ## WebUI
 
 There is also a WebUI simply displaying the Clients and Containers in a diagram. 
@@ -139,9 +217,11 @@ If you are testing locally just type in your Browser: `loocalhost:1453/webui`
 
 Well, the following bullet points could be a plausible roadmap:
 
+- Catch `àsyncio.LimitOverrunError` on the read calls such as `readuntil(b'\r\n\r\n')`.
 - Advance the socket from HTTP to HTTPS.
 - Rewrite the *frontend* JavaScript code (, because it is 100 % LLM at this point of time) and make it more like in the animation.
 - Write test scripts.
+- Remove (or add) logging messages.
 
 # How this Reverseproxy was built?
 
