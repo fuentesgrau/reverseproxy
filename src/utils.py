@@ -44,11 +44,14 @@ def get_http_request_path(http_request_header: bytes) -> bytes:
 
     /path/to/somewhere
     """
-    http_request_header_fields = http_request_header.split(b'\r\n')                               # Each line in HTTP-Header always ends with CRLF. Source: RFC 9112 (Section 2.1).
-    http_request_line = http_request_header_fields[0]                                             # The first line in HTTP-Header is always the Request Line. Source: RFC 9112 (Section 2.1).
-    http_request_method, http_request_path, http_request_version = http_request_line.split(b' ')  # Request Line always has the scheme: Method Path Version. Source: RFC 9112 (Section 3).
+    http_request_header_fields = http_request_header.split(b'\r\n')    # Each line in HTTP-Header always ends with CRLF. Source: RFC 9112 (Section 2.1).
+    http_request_line = http_request_header_fields[0]                  # The first line in HTTP-Header is always the Request Line. Source: RFC 9112 (Section 2.1).
+    http_request_line = http_request_line.split(sep=b' ', maxsplit=2)  # Request Line always has the scheme: Method Path Version. Source: RFC 9112 (Section 3).
 
-    return http_request_path
+    if len(http_request_line) != 3:
+        return b''
+
+    return http_request_line[1]
 
 def get_http_request_cookies(http_request_header: bytes) -> dict:
     """Parses cookies inside an HTTP-Request and returns them in a dictionary.
