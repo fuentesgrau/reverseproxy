@@ -83,6 +83,13 @@ async def client_connected_cb(client_reader: StreamReader, client_writer: Stream
         await client_writer.wait_closed()
 
         return
+    except asyncio.LimitOverrunError as e:
+        logger.error(f"LimitOverrunError: {e}")
+
+        client_writer.close()
+        await client_writer.wait_closed()
+
+        return
     except asyncio.TimeoutError as e:
         logger.debug(f"TimeoutError: {e}")
 
