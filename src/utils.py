@@ -108,7 +108,7 @@ async def create_session(sid: str) -> Session:
     await asyncio.to_thread(path.mkdir)
     container = await asyncio.to_thread(
         d.containers.run,
-        'nodered/node-red',                        # type: ignore
+        'registry.git.nrw/rwth-acs/public/villas/conf',                        # type: ignore
         detach=True,                                     # type: ignore
         ports={'1880/tcp': 0},                           # -p 0:1880 (0 lets the kernel choose a free port)
         volumes={path: {'bind': '/data', 'mode': 'rw'}}  # -v reverseproxy/data/sid:/data
